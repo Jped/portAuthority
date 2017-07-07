@@ -14,6 +14,7 @@ from scipy.misc import factorial
 from scipy.optimize import curve_fit
 from scipy.stats import chisquare
 from lmfit import Model
+import calendar
 db = MongoClient().PADATA
 matplotlib.rc('xtick', labelsize=10)
 matplotlib.rc('ytick', labelsize=10)
@@ -235,15 +236,38 @@ def arrival_byDate(gate,time_interval, date):
         #pipe = [{"$match":{"$and":[{"GATE":str(gate)},{'TIME':{'$gte':date, '$lt': date +datetime.timedelta(days=1)}}]}},{"$group":{"_id":"$ADDRESS", "TIME":{"$min":"$TIME"}}}, {'$group': {'count': {'$sum': 1}, '_id': {'$subtract': [{'$subtract': ['$TIME', comparison]}, {'$mod': [{'$subtract': ['$TIME', comparison]},  60000 *time_interval]}]}, 'time': {'$min': '$TIME'}}}]
         pipe    =   [{"$match":{"$and":[{"GATE":str(gate)},{'TIME':{'$gte':date, '$lt': date +datetime.timedelta(days=1)}}]}},{"$group": {"_id":"$ADDRESS", "times":{"$push":"$TIME"}}}]
         results = db["PortAuthority"].aggregate(pipe)
-        rate_array = []
-        start_time = []
-        #here we are going through the results and addding them to arrays to be graphed
+        arrival_count   =   {}
         for r in results:
-            count   =   r["count"]
-            rate_array.append(count)
-            start_time.append(r["time"])
-        #create a subplot in order to use the xaxis feature...
-
+            t       =   r["times"]
+            if len(t)>1:
+                times   =   sorted(t)
+                #got to count the first and last ones somewhere here...
+                float_subtract_arrival  = (times[0]-comparison).total_seconds()
+                resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*time_interval))
+                if resolution_value_arrival in arrival_count:
+                    count                           = arrival_count[resolution_value_arrival] + 1
+                    arrival_count[resolution_value_arrival]    = count
+                else:
+                    arrival_count[resolution_value_arrival]=1
+                if len(times)>2:
+                    for x in range(len(times)-1):
+                        diff    =   times[x+1]- times[x]
+                        if diff>datetime.timedelta(minutes=120):
+                            #count an arrival @[x+1] and an exit @[x]
+                            #becareful not to recount endpoints
+                            if (x+1)!=(len(times)-1):
+                                float_subtract_arrival  = (times[x+1]-comparison).total_seconds()
+                                resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*time_interval))
+                                if resolution_value_arrival in arrival_count:
+                                    count                           = arrival_count[resolution_value_arrival] + 1
+                                    arrival_count[resolution_value_arrival]    = count
+                                else:
+                                    arrival_count[resolution_value_arrival]=1
+        start_time    =  np.array(arrival_count.keys()) + calendar.timegm(comparison.utctimetuple())
+        start_time    = [datetime.datetime.fromtimestamp(x) for x in start_time]
+        rate_array    = arrival_count.values()
+        print start_time
+        print rate_array
         ax = plt.subplot(111)
         ax.bar(start_time, rate_array, width=0.007)
         ax.xaxis_date()
