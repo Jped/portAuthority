@@ -23,7 +23,7 @@ matplotlib.rc('ytick', labelsize=10)
     This function takes in a filename, changes the file from | to , delinated and then runs an os command to import to mongo
 """
 def dump_data(filename, gate):
-    new_filename=   "{}.json".format(gate)
+    new_filename=   "{}.json".format(filename)
     data        =   pd.read_csv(filename, sep="|", skiprows=4)
     data["GATE"]=   str(gate)
     data["TIME"]=   data["TIME"].apply(lambda x:{"$date":x})
@@ -31,6 +31,12 @@ def dump_data(filename, gate):
         f.write(data.to_json(orient='records',lines=True))
     #new file is the file that is comma delinated instead of pipe. This is done so it can be added to the mongo db.
     os.system("mongo| mongoimport --db PADATA --collection PortAuthority --file {} --type json --headerline &".format(new_filename))
+# dump_data("./233_data/1.txt","233")
+# dump_data("./233_data/2.txt","233")
+# dump_data("./233_data/3.txt","233")
+# dump_data("./233_data/4.txt","233")
+# dump_data("./233_data/5.txt","233")
+
 """
     This function takes in a gate  and a time interval and then displays a graph
 """
@@ -141,7 +147,8 @@ def graph_whole_thing(gate):
         mon_start     =    mon_start + datetime.timedelta(weeks=2)
         week_num+=2
 
-#graph_whole_thing(223)
+#graph_whole_thing("204")
+#graph_whole_thing("233")
 
 def get_average_wait(gate):
     pipe        = [{"$match":{"GATE":str(gate)}},{"$group":{"_id":"$ADDRESS", "startTime":{"$min":"$TIME"}, "endTime":{"$max":"$TIME"}}}]
@@ -164,20 +171,32 @@ def get_average_wait(gate):
 def origin_destination():
      o_d        = permutations(db["PortAuthority"].distinct("GATE"),2)
      o_d_dict   = {(str(i[0])+ "->" + str(i[1])):0 for i in o_d}
-     pipe       = [{"$group":{"_id":"$ADDRESS", "gate_time":{"$push":{"gate":"$GATE", "time":"$TIME"}},"count":{"$sum":1}}}]
+     pipe       = [{"$group":{"_id":"$ADDRESS", "gate_time":{"$push":{"gate":"$GATE", "time":"$TIME"}}}}]
      results    = db["PortAuthority"].aggregate(pipe, allowDiskUse=True)
      for r in results:
          time_path = sorted(r["gate_time"], key=itemgetter('time'))
          if len(time_path)>1:
-             cur_gate=time_path[0]["gate"]
-             for p in time_path:
+             origin_gate    = time_path[0]["gate"]
+             last_time    = time_path[0]["time"]
+             len_gates      =  len(time_path)
+             for x in range(len_gates):
+                 p          = time_path[x]
                  nex_gate   = p["gate"]
-                 if nex_gate != cur_gate:
+                 time_delta = p["time"] - last_time
+                 last_gate  =  time_path[x-1]["gate"]
+                 if last_gate != origin_gate and time_delta>=datetime.timedelta(hours=2):
                      #do magic
-                     select     = str(cur_gate)+ "->"+ str(nex_gate)
+                     select          = str(origin_gate)+ "->"+ str(last_gate)
                      o_d_dict[select]= o_d_dict[select] + 1
-                     cur_gate = p['gate']
+                     origin_gate    =  nex_gate
+                 elif x ==(len_gates-1) and nex_gate != origin_gate:
+                     #this is a to catch the last location
+                     select     = str(origin_gate)+ "->"+ str(nex_gate)
+                     o_d_dict[select]= o_d_dict[select] + 1
+                 last_time   =   p["time"]
      print o_d_dict
+
+#origin_destination()
 
 
 def arrival_rate(gate, time_interval, days_of_week=[]):
@@ -283,43 +302,26 @@ def arrival_byDate(gate,time_interval, date):
         plt.savefig("Frequency-{},{},{}-rev2.png".format(gate, date.date(),time_interval), dpi = 600)
         plt.show()
 
-arrival_byDate(223,15, datetime.datetime(2016,06,14))
+#arrival_byDate(223,15, datetime.datetime(2016,06,14))
 #arrival_byDate(223,15, datetime.datetime(2016,06,07))
 
 def poisson(k, lamb):
     return (lamb**k/factorial(k)) * np.exp(-lamb)
 
-def poisson_fitting(bins,gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
-    #days 1 sunday 7 saturday
-    #exclude dates should be touples containg start and end times
-    #hours 0-24
-    resolution  =   15
-    #pmodel      =   Model(possion)
-    match = [{"GATE":str(gate)}]
-    comparison  = datetime.datetime(1970,01,01)
-    if exclude_dates:
-        for date in exclude_dates:
-            match.append({"TIME":{"$not":{"$gte":date[0],"$lte":date[1]}}})
-    if exclude_hours or exclude_days:
-        if exclude_hours:
-            match.append({"hour":{"$not":{"$in":exclude_hours}}})
-        if exclude_days:
-            match.append({"days":{"$not":{"$in":exclude_days}}})
-        pipe        = [{"$project":{"hour":{"$hour":"$TIME"},"days":{"$dayOfWeek":"$TIME"},"ADDRESS":"$ADDRESS","TIME":"$TIME","GATE":"$GATE"}},{"$match":{"$and":match}},{"$group":{"_id":"$ADDRESS", "TIME":{"$min":"$TIME"}}}, {'$group': {'count': {'$sum': 1}, '_id': {'$subtract': [{'$subtract': ['$TIME', comparison]}, {'$mod': [{'$subtract': ['$TIME', comparison]},  60000 *resolution]}]}, 'time': {'$min': '$TIME'}}},{"$sort":{"TIME":1}}]
-    else:
-        pipe        = [{"$match":{"$and":match}},{"$group":{"_id":"$ADDRESS", "TIME":{"$min":"$TIME"}}}, {'$group': {'count': {'$sum': 1}, '_id': {'$subtract': [{'$subtract': ['$TIME', comparison]}, {'$mod': [{'$subtract': ['$TIME', comparison]},  60000 *resolution]}]}, 'time': {'$min': '$TIME'}}},{"$sort":{"TIME":1}}]
-    results     = db["PortAuthority"].aggregate(pipe)
-    count   =   []
-    for r in results:
-        count.append(r["count"])
-    scaled_count                =  np.array(count)
+def poisson_fitting(bins,gate,resolution,values,ty):
+    scaled_count                =  np.array(values)
     total_observations          =  len(scaled_count)
+    print scaled_count
+    print "___________SCALED COUNT _____________"
     #basically what happens here is that the count array is scapled to 0 - bins
     high_count                  = float(max(scaled_count))
+    print high_count
+    print "____________high count __________"
     scaled_count                = scaled_count/high_count
     scaled_count                = scaled_count*bins
     entries, bin_edges, patches = plt.hist(scaled_count, bins=bins, range=[0, bins], normed=True)
     bin_middles                 = 0.5*(bin_edges[1:] + bin_edges[:-1])
+    print entries
     parameters, cov_matrix      = curve_fit(poisson, bin_middles, entries)
     x_plot                      = np.linspace(0, bins, 1000)
     lambda_final                = (parameters/float(bins))*high_count
@@ -338,10 +340,15 @@ def poisson_fitting(bins,gate,exclude_days=[],exclude_dates=[], exclude_hours=[]
         expected = (expected_p_distb_back_scaled[x])
         if expected !=0:
             chisq+= ((expected-entries_back_scaled[x])**2)/expected
+    print "chisq"
     print chisq
+    print "labmba"
+    print lambda_final
     plt.plot(x_plot, p_distb, 'r-', lw=2)
-    plt.savefig("Poisson-{}-{}-{}.png".format(gate,bins,resolution), dpi = 600)
-    plt.show()
+    plt.title("{} rate at gate:{} with {} bins and a {} minute resolution".format(ty,gate,bins,resolution))
+    plt.figtext(0.99,0.01,"chi squared of {} Labmba of {}".format(chisq, lambda_final), horizontalalignment='right')
+    plt.savefig("{}-Poisson-{}-{}-{}-rev2.png".format(ty,gate,bins,resolution), dpi = 600)
+    plt.close()
 
 
 def exit_rate(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
@@ -409,12 +416,22 @@ def exit_rate(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
         num_zeros_vals  =   int(num_intervals-len(values))
         print num_zeros_vals
         values          =   np.append(values, np.zeros(num_zeros_vals))
-        plt.hist(values)
-        plt.savefig("exit_rate.png", dpi=700)
 
 
 
 #exit_rate(202,exclude_days=[1,7],exclude_dates=[(datetime.datetime(2016,05,02),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,4)),(datetime.datetime(2016,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,20,21,22,23])
+
+#get day of week dictionary, used to count what days happened
+def get_dow_dict(start_date,end_date):
+    dow_dict    =   {}
+    for x in range(start_date.toordinal(), end_date.toordinal()):
+        weekday =   datetime.datetime.fromordinal(x).weekday() + 1
+        if weekday in dow_dict:
+            dow_dict[weekday]+=1
+        else:
+            dow_dict[weekday]=1
+    return dow_dict
+
 def arrival_exit_rates(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
     resolution      = 15
     reset_interval  = 120
@@ -422,15 +439,22 @@ def arrival_exit_rates(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
     start_time      = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",1)]).limit(1)[0]["TIME"]
     end_time        = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",-1)]).limit(1)[0]["TIME"]
     query_interval  = end_time-start_time
-    num_intervals   = int(((query_interval).total_seconds()*60)/resolution)
-    print "initial intervals {}".format(num_intervals)
+    dow_dict        = {}
     match = [{"GATE":str(gate)}]
     if exclude_dates:
-        for date in exclude_dates:
+        for x in range(len(exclude_dates)):
+            date    =   exclude_dates[x]
             match.append({"TIME":{"$not":{"$gte":date[0],"$lte":date[1]}}})
-            seconds_between_dates   = date[1]
-            num_intervals-=(((date[1]-date[0]).total_seconds()*60)/resolution)
-            print "after exclude dates {}".format(num_intervals)
+            query_interval_temp =   datetime.timedelta(0)
+            if x<=(len(exclude_dates)-2):
+                if exclude_days:
+                        new_dow_dict=   get_dow_dict(date[1], exclude_dates[x+1][0])
+                        dow_dict    =   { k: dow_dict.get(k, 0) + new_dow_dict.get(k, 0) for k in set(dow_dict) | set(new_dow_dict) }
+                query_interval_temp        +=  (exclude_dates[x+1][0]-date[1])
+                print "after exclude dates {}".format(query_interval_temp.days)
+            if query_interval_temp>datetime.timedelta(0):
+                query_interval  =   query_interval_temp
+    num_intervals   =   (query_interval.total_seconds()/60)/resolution
     if exclude_hours or exclude_days:
         if exclude_hours:
             match.append({"hour":{"$not":{"$in":exclude_hours}}})
@@ -438,15 +462,24 @@ def arrival_exit_rates(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
             print "after exclude hours {}".format(num_intervals)
         if exclude_days:
             match.append({"days":{"$not":{"$in":exclude_days}}})
-            num_intervals-=len(exclude_days)*(1440/resolution)
+            total_days = 0
+            for d in exclude_days:
+                if dow_dict:
+                    total_days += dow_dict[d]
+            print "total days excluded"
+            print total_days
+            num_intervals-=total_days*(1440/resolution)
             print "after exclude_days {}".format(num_intervals)
         pipe        = [{"$project":{"hour":{"$hour":"$TIME"},"days":{"$dayOfWeek":"$TIME"},"ADDRESS":"$ADDRESS","TIME":"$TIME","GATE":"$GATE"}},{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS", "times":{"$push":"$TIME"}}}]
     else:
         pipe            = [{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS", "times":{"$push":"$TIME"}}}]
     results         = db["PortAuthority"].aggregate(pipe, allowDiskUse=True)
+    print pipe
     arrival_count   =   {}
     exit_count      =   {}
+    # c               =   0
     for r in results:
+        # c+=1
         t       =   r["times"]
         if len(t)>1:
             times   =   sorted(t)
@@ -487,12 +520,19 @@ def arrival_exit_rates(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
                             exit_count[resolution_value_exit]   = count
                         else:
                             exit_count[resolution_value_exit]=1
-    print arrival_count
-    print exit_count
+    arrival_values          =   np.array(arrival_count.values())
+    exit_values             =   np.array(exit_count.values())
+    num_zeros_vals          =   int(num_intervals-len(arrival_values))
+    num_zeros_vals_exit     =   int(num_intervals-len(exit_values))
+    arrival_values          =   np.append(arrival_values, np.zeros(num_zeros_vals))
+    exit_values             =   np.append(exit_values, np.zeros(num_zeros_vals_exit))
+    poisson_fitting(40,gate,resolution,arrival_values,"arrival")
+    poisson_fitting(40,gate,resolution,exit_values, "exit")
 
-#arrival_exit_rates(202,exclude_days=[1,7],exclude_dates=[(datetime.datetime(2016,05,02),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,4)),(datetime.datetime(2016,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,20,21,22,23])
+#arrival_exit_rates("north",exclude_days=[1,7],exclude_dates=[(datetime.datetime(2015,05,02),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,04)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,20,21,22,23])
+arrival_exit_rates("233",exclude_days=[1,7],exclude_dates=[(datetime.datetime(2000,05,10),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,04)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,20,21,22,23])
 
-#arrival_rate_byDate(223, 60, datetime.datetime(2016,05,9))
+# arrival_rate_byDate(223, 60, datetime.datetime(2016,05,9))
 #arrival_rate(223,10)
 #arrival_rate_byDate(223, 15, datetime.datetime(2016,05,03))
 #graph_month(202,15, datetime.datetime(2016,06,04))
