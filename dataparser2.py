@@ -174,12 +174,14 @@ def origin_destination():
      pipe       = [{"$group":{"_id":"$ADDRESS", "gate_time":{"$push":{"gate":"$GATE", "time":"$TIME"}}}}]
      results    = db["PortAuthority"].aggregate(pipe, allowDiskUse=True)
      for r in results:
+     #looping over the people
          time_path = sorted(r["gate_time"], key=itemgetter('time'))
          if len(time_path)>1:
              origin_gate    = time_path[0]["gate"]
-             last_time    = time_path[0]["time"]
+             last_time      = time_path[0]["time"]
              len_gates      =  len(time_path)
-             for x in range(len_gates):
+             for x in range(1,len_gates):
+                 #looping over the person's times
                  p          = time_path[x]
                  nex_gate   = p["gate"]
                  time_delta = p["time"] - last_time
@@ -285,8 +287,6 @@ def arrival_byDate(gate,time_interval, date):
         start_time    =  np.array(arrival_count.keys()) + calendar.timegm(comparison.utctimetuple())
         start_time    = [datetime.datetime.fromtimestamp(x) for x in start_time]
         rate_array    = arrival_count.values()
-        print start_time
-        print rate_array
         ax = plt.subplot(111)
         ax.bar(start_time, rate_array, width=0.007)
         ax.xaxis_date()
@@ -302,8 +302,8 @@ def arrival_byDate(gate,time_interval, date):
         plt.savefig("Frequency-{},{},{}-rev2.png".format(gate, date.date(),time_interval), dpi = 600)
         plt.show()
 
-#arrival_byDate(223,15, datetime.datetime(2016,06,14))
-#arrival_byDate(223,15, datetime.datetime(2016,06,07))
+#arrival_byDate("south",15, datetime.datetime(2016,06,23))
+#arrival_byDate(223,15, datetime.datetime(2016,06,22,0,0,0))
 
 def poisson(k, lamb):
     return (lamb**k/factorial(k)) * np.exp(-lamb)
@@ -432,72 +432,51 @@ def get_dow_dict(start_date,end_date):
             dow_dict[weekday]=1
     return dow_dict
 
-def arrival_exit_rates(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
+def arrival_exit_rates(exclude_days=[],exclude_dates=[], exclude_hours=[]):
     resolution      = 15
     reset_interval  = 120
     comparison      = datetime.datetime(1970,01,01)
-    start_time      = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",1)]).limit(1)[0]["TIME"]
-    end_time        = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",-1)]).limit(1)[0]["TIME"]
-    query_interval  = end_time-start_time
-    dow_dict        = {}
-    match = [{"GATE":str(gate)}]
+    match           =  []
     if exclude_dates:
         for x in range(len(exclude_dates)):
             date    =   exclude_dates[x]
             match.append({"TIME":{"$not":{"$gte":date[0],"$lte":date[1]}}})
-            query_interval_temp =   datetime.timedelta(0)
-            if x<=(len(exclude_dates)-2):
-                if exclude_days:
-                        new_dow_dict=   get_dow_dict(date[1], exclude_dates[x+1][0])
-                        dow_dict    =   { k: dow_dict.get(k, 0) + new_dow_dict.get(k, 0) for k in set(dow_dict) | set(new_dow_dict) }
-                query_interval_temp        +=  (exclude_dates[x+1][0]-date[1])
-                print "after exclude dates {}".format(query_interval_temp.days)
-            if query_interval_temp>datetime.timedelta(0):
-                query_interval  =   query_interval_temp
-    num_intervals   =   (query_interval.total_seconds()/60)/resolution
     if exclude_hours or exclude_days:
         if exclude_hours:
             match.append({"hour":{"$not":{"$in":exclude_hours}}})
-            num_intervals-=len(exclude_hours)*(60/resolution)*(query_interval.days-(len(exclude_days)*(query_interval.days/7)))
-            print "after exclude hours {}".format(num_intervals)
         if exclude_days:
             match.append({"days":{"$not":{"$in":exclude_days}}})
-            total_days = 0
-            for d in exclude_days:
-                if dow_dict:
-                    total_days += dow_dict[d]
-            print "total days excluded"
-            print total_days
-            num_intervals-=total_days*(1440/resolution)
-            print "after exclude_days {}".format(num_intervals)
-        pipe        = [{"$project":{"hour":{"$hour":"$TIME"},"days":{"$dayOfWeek":"$TIME"},"ADDRESS":"$ADDRESS","TIME":"$TIME","GATE":"$GATE"}},{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS", "times":{"$push":"$TIME"}}}]
+        pipe        = [{"$project":{"hour":{"$hour":"$TIME"},"days":{"$dayOfWeek":"$TIME"},"ADDRESS":"$ADDRESS","TIME":"$TIME","GATE":"$GATE"}},{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS","gate":{"$push":"$GATE"}, "times":{"$push":"$TIME"}}}]
     else:
-        pipe            = [{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS", "times":{"$push":"$TIME"}}}]
-    results         = db["PortAuthority"].aggregate(pipe, allowDiskUse=True)
+        pipe            = [{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS", "gate":{"$push":"$GATE"},"times":{"$push":"$TIME"}}}]
     print pipe
-    arrival_count   =   {}
-    exit_count      =   {}
+    results         = db["PortAuthority"].aggregate(pipe, allowDiskUse=True)
+    arrival_count   =   {"204":{}, "202":{}, "south":{},"north":{},"223":{},"233":{}}
+    exit_count      =   {"204":{}, "202":{}, "south":{},"north":{},"223":{},"233":{}}
     # c               =   0
     for r in results:
         # c+=1
         t       =   r["times"]
+        gates   =   r["gate"]
         if len(t)>1:
-            times   =   sorted(t)
+            hold    =   sorted(zip(t,gates))
+            times   =   [ x for (x,y) in hold]
+            g       =   [ y for (x,y) in hold]
             #got to count the first and last ones somewhere here...
             float_subtract_arrival  = (times[0]-comparison).total_seconds()
             resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*resolution))
-            if resolution_value_arrival in arrival_count:
-                count                           = arrival_count[resolution_value_arrival] + 1
-                arrival_count[resolution_value_arrival]    = count
+            if resolution_value_arrival in arrival_count[g[0]]:
+                count                           = arrival_count[g[0]][resolution_value_arrival] + 1
+                arrival_count[g[0]][resolution_value_arrival]    = count
             else:
-                arrival_count[resolution_value_arrival]=1
+                arrival_count[g[0]][resolution_value_arrival]=1
             float_subtract_exit  = (times[-1]-comparison).total_seconds()
             resolution_value_exit= float_subtract_exit - (float_subtract_exit % float(60*resolution))
-            if resolution_value_exit in exit_count:
-                count                               = exit_count[resolution_value_exit] + 1
-                exit_count[resolution_value_exit]   = count
+            if resolution_value_exit in exit_count[g[-1]]:
+                count                               = exit_count[g[-1]][resolution_value_exit] + 1
+                exit_count[g[-1]][resolution_value_exit]   = count
             else:
-                exit_count[resolution_value_exit]=1
+                exit_count[g[-1]][resolution_value_exit]=1
             #ask professor for the edge case of only two times where the difference is more than two hours between the times...here i am skipping them
             if len(times)>2:
                 for x in range(len(times)-1):
@@ -508,29 +487,64 @@ def arrival_exit_rates(gate,exclude_days=[],exclude_dates=[], exclude_hours=[]):
                         if (x+1)!=(len(times)-1):
                             float_subtract_arrival  = (times[x+1]-comparison).total_seconds()
                             resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*resolution))
-                            if resolution_value_arrival in arrival_count:
-                                count                           = arrival_count[resolution_value_arrival] + 1
-                                arrival_count[resolution_value_arrival]    = count
+                            if resolution_value_arrival in arrival_count[g[x+1]]:
+                                count                           = arrival_count[g[x+1]][resolution_value_arrival] + 1
+                                arrival_count[g[x+1]][resolution_value_arrival]    = count
                             else:
-                                arrival_count[resolution_value_arrival]=1
+                                arrival_count[g[x+1]][resolution_value_arrival]=1
                         float_subtract_exit  = (times[x]-comparison).total_seconds()
                         resolution_value_exit= float_subtract_exit - (float_subtract_exit % float(60*resolution))
-                        if resolution_value_exit in exit_count:
-                            count                               = exit_count[resolution_value_exit] + 1
-                            exit_count[resolution_value_exit]   = count
+                        if resolution_value_exit in exit_count[g[x]]:
+                            count                               = exit_count[g[x]][resolution_value_exit] + 1
+                            exit_count[g[x]][resolution_value_exit]   = count
                         else:
-                            exit_count[resolution_value_exit]=1
-    arrival_values          =   np.array(arrival_count.values())
-    exit_values             =   np.array(exit_count.values())
-    num_zeros_vals          =   int(num_intervals-len(arrival_values))
-    num_zeros_vals_exit     =   int(num_intervals-len(exit_values))
-    arrival_values          =   np.append(arrival_values, np.zeros(num_zeros_vals))
-    exit_values             =   np.append(exit_values, np.zeros(num_zeros_vals_exit))
-    poisson_fitting(40,gate,resolution,arrival_values,"arrival")
-    poisson_fitting(40,gate,resolution,exit_values, "exit")
+                            exit_count[g[x]][resolution_value_exit]=1
+    gates                   =   arrival_count.keys()
+    #removing mest up dadta
+    gates.remove("north")
+    gates.remove("233")
+    for gate in gates:
+        start_time      = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",1)]).limit(1)[0]["TIME"]
+        end_time        = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",-1)]).limit(1)[0]["TIME"]
+        query_interval  = end_time-start_time
+        dow_dict        = {}
+        if exclude_dates:
+            for x in range(len(exclude_dates)):
+                date    =   exclude_dates[x]
+                query_interval_temp =   datetime.timedelta(0)
+                if x<=(len(exclude_dates)-2):
+                    if exclude_days:
+                            new_dow_dict=   get_dow_dict(date[1], exclude_dates[x+1][0])
+                            dow_dict    =   { k: dow_dict.get(k, 0) + new_dow_dict.get(k, 0) for k in set(dow_dict) | set(new_dow_dict) }
+                    query_interval_temp        +=  (exclude_dates[x+1][0]-date[1])
+                    print "after exclude dates {}".format(query_interval_temp.days)
+                if query_interval_temp>datetime.timedelta(0):
+                    query_interval  =   query_interval_temp
+        num_intervals   =   (query_interval.total_seconds()/60)/resolution
+        if exclude_hours or exclude_days:
+            if exclude_hours:
+                num_intervals-=len(exclude_hours)*(60/resolution)*(query_interval.days-(len(exclude_days)*(query_interval.days/7)))
+                print "after exclude hours {}".format(num_intervals)
+            if exclude_days:
+                total_days = 0
+                for d in exclude_days:
+                    if dow_dict:
+                        total_days += dow_dict[d]
+                print "total days excluded"
+                print total_days
+                num_intervals-=total_days*(1440/resolution)
+                print "after exclude_days {}".format(num_intervals)
+        arrival_values          =   np.array(arrival_count[gate].values())
+        exit_values             =   np.array(exit_count[gate].values())
+        num_zeros_vals          =   int(num_intervals-len(arrival_values))
+        num_zeros_vals_exit     =   int(num_intervals-len(exit_values))
+        arrival_values          =   np.append(arrival_values, np.zeros(num_zeros_vals))
+        exit_values             =   np.append(exit_values, np.zeros(num_zeros_vals_exit))
+        poisson_fitting(40,gate,resolution,arrival_values,"arrival")
+        poisson_fitting(40,gate,resolution,exit_values, "exit")
 
 #arrival_exit_rates("north",exclude_days=[1,7],exclude_dates=[(datetime.datetime(2015,05,02),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,04)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,20,21,22,23])
-arrival_exit_rates("233",exclude_days=[1,7],exclude_dates=[(datetime.datetime(2000,05,10),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,04)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,20,21,22,23])
+arrival_exit_rates(exclude_days=[1,2,3,4,5,7],exclude_dates=[(datetime.datetime(2000,05,10),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,11)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])
 
 # arrival_rate_byDate(223, 60, datetime.datetime(2016,05,9))
 #arrival_rate(223,10)
