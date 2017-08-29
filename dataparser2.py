@@ -53,7 +53,6 @@ def graph_frequency(gate, time_interval, days_of_week=[]):
     else:
         pipe    = [{"$match":{"GATE":str(gate)}},{"$project":{"dayOfWeek":{"$dayOfWeek":"$TIME"}, "TIME":"$TIME","ADDRESS":"$ADDRESS"}}, {"$match":{"dayOfWeek":{"$in":days_of_week}}}, {"$group": {"_id":{"$subtract":[{"$subtract":["$TIME",comparison]}, {"$mod":[{"$subtract":["$TIME",comparison]}, 60000 *time_interval]}]},"addresses": { "$push": "$ADDRESS" }, "start":{"$min":"$TIME"}}}, {"$sort":{"_id":1}}]
     results = db["PortAuthority"].aggregate(pipe)
-    print pipe
     frequency_array = []
     start_time      = []
     #here we are going through the results and addding them to arrays to be graphed
@@ -346,7 +345,7 @@ def poisson_fitting(bins,gate,resolution,values,ty):
     print lambda_final
     plt.plot(x_plot, p_distb, 'r-', lw=2)
     plt.title("{} rate at gate:{} with {} bins and a {} minute resolution".format(ty,gate,bins,resolution))
-    plt.figtext(0.99,0.01,"chi squared of {} Labmba of {}".format(chisq, lambda_final), horizontalalignment='right')
+    plt.figtext(0.99,0.01,"chi squared of {} Labmba of {}, scaled {}".format(chisq, lambda_final, parameters), horizontalalignment='right')
     plt.savefig("{}-Poisson-{}-{}-{}-rev2.png".format(ty,gate,bins,resolution), dpi = 600)
     plt.close()
 
@@ -449,7 +448,6 @@ def arrival_exit_rates(exclude_days=[],exclude_dates=[], exclude_hours=[]):
         pipe        = [{"$project":{"hour":{"$hour":"$TIME"},"days":{"$dayOfWeek":"$TIME"},"ADDRESS":"$ADDRESS","TIME":"$TIME","GATE":"$GATE"}},{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS","gate":{"$push":"$GATE"}, "times":{"$push":"$TIME"}}}]
     else:
         pipe            = [{"$match":{"$and":match}},{"$group": {"_id":"$ADDRESS", "gate":{"$push":"$GATE"},"times":{"$push":"$TIME"}}}]
-    print pipe
     results         = db["PortAuthority"].aggregate(pipe, allowDiskUse=True)
     arrival_count   =   {"204":{}, "202":{}, "south":{},"north":{},"223":{},"233":{}}
     exit_count      =   {"204":{}, "202":{}, "south":{},"north":{},"223":{},"233":{}}
@@ -463,13 +461,15 @@ def arrival_exit_rates(exclude_days=[],exclude_dates=[], exclude_hours=[]):
             times   =   [ x for (x,y) in hold]
             g       =   [ y for (x,y) in hold]
             #got to count the first and last ones somewhere here...
-            float_subtract_arrival  = (times[0]-comparison).total_seconds()
-            resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*resolution))
-            if resolution_value_arrival in arrival_count[g[0]]:
-                count                           = arrival_count[g[0]][resolution_value_arrival] + 1
-                arrival_count[g[0]][resolution_value_arrival]    = count
-            else:
-                arrival_count[g[0]][resolution_value_arrival]=1
+            last_arrival = g[0]
+            if g[0]=="south" or g[0]=="north":
+                float_subtract_arrival  = (times[0]-comparison).total_seconds()
+                resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*resolution))
+                if resolution_value_arrival in arrival_count[g[0]]:
+                    count                           = arrival_count[g[0]][resolution_value_arrival] + 1
+                    arrival_count[g[0]][resolution_value_arrival]    = count
+                else:
+                    arrival_count[g[0]][resolution_value_arrival]=1
             float_subtract_exit  = (times[-1]-comparison).total_seconds()
             resolution_value_exit= float_subtract_exit - (float_subtract_exit % float(60*resolution))
             if resolution_value_exit in exit_count[g[-1]]:
@@ -484,25 +484,32 @@ def arrival_exit_rates(exclude_days=[],exclude_dates=[], exclude_hours=[]):
                     if diff>datetime.timedelta(minutes=reset_interval):
                         #count an arrival @[x+1] and an exit @[x]
                         #becareful not to recount endpoints
-                        if (x+1)!=(len(times)-1):
-                            float_subtract_arrival  = (times[x+1]-comparison).total_seconds()
-                            resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*resolution))
-                            if resolution_value_arrival in arrival_count[g[x+1]]:
-                                count                           = arrival_count[g[x+1]][resolution_value_arrival] + 1
-                                arrival_count[g[x+1]][resolution_value_arrival]    = count
+                        #only count it if he originates at south or north
+                        if g[x+1] == "north" or g[x+1] == "south":
+                            if (x+1)!=(len(times)-1):
+                                float_subtract_arrival  = (times[x+1]-comparison).total_seconds()
+                                resolution_value_arrival= float_subtract_arrival - (float_subtract_arrival % float(60*resolution))
+                                if resolution_value_arrival in arrival_count[g[x+1]]:
+                                    count                           = arrival_count[g[x+1]][resolution_value_arrival] + 1
+                                    arrival_count[g[x+1]][resolution_value_arrival]    = count
+                                else:
+                                    arrival_count[g[x+1]][resolution_value_arrival]=1
+                        if last_arrival == "north" or last_arrival=="south":
+                            float_subtract_exit  = (times[x]-comparison).total_seconds()
+                            resolution_value_exit= float_subtract_exit - (float_subtract_exit % float(60*resolution))
+                            if resolution_value_exit in exit_count[g[x]]:
+                                count                               = exit_count[g[x]][resolution_value_exit] + 1
+                                exit_count[g[x]][resolution_value_exit]   = count
                             else:
-                                arrival_count[g[x+1]][resolution_value_arrival]=1
-                        float_subtract_exit  = (times[x]-comparison).total_seconds()
-                        resolution_value_exit= float_subtract_exit - (float_subtract_exit % float(60*resolution))
-                        if resolution_value_exit in exit_count[g[x]]:
-                            count                               = exit_count[g[x]][resolution_value_exit] + 1
-                            exit_count[g[x]][resolution_value_exit]   = count
-                        else:
-                            exit_count[g[x]][resolution_value_exit]=1
+                                exit_count[g[x]][resolution_value_exit]=1
+                        last_arrival = g[x+1]
     gates                   =   arrival_count.keys()
     #removing mest up dadta
     gates.remove("north")
+    gates.remove("202")
+    gates.remove("204")
     gates.remove("233")
+    gates.remove("223")
     for gate in gates:
         start_time      = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",1)]).limit(1)[0]["TIME"]
         end_time        = db["PortAuthority"].find({"GATE":str(gate)}).sort([("TIME",-1)]).limit(1)[0]["TIME"]
@@ -528,7 +535,7 @@ def arrival_exit_rates(exclude_days=[],exclude_dates=[], exclude_hours=[]):
             if exclude_days:
                 total_days = 0
                 for d in exclude_days:
-                    if dow_dict:
+                    if dow_dict and (d in dow_dict):
                         total_days += dow_dict[d]
                 print "total days excluded"
                 print total_days
@@ -537,14 +544,30 @@ def arrival_exit_rates(exclude_days=[],exclude_dates=[], exclude_hours=[]):
         arrival_values          =   np.array(arrival_count[gate].values())
         exit_values             =   np.array(exit_count[gate].values())
         num_zeros_vals          =   int(num_intervals-len(arrival_values))
+        print num_intervals
+        print "____NUM INTERVALS____"
+        print num_zeros_vals
+        print "____NUM ZERO VALS_____"
         num_zeros_vals_exit     =   int(num_intervals-len(exit_values))
+        print num_zeros_vals_exit
+        print "_____NUM ZERO VALS EXIT_____"
+        print len(exit_values)
+        print "____LEN EXIT VALUES____"
+        print len(arrival_values)
+        print "___len arrival_values____"
         arrival_values          =   np.append(arrival_values, np.zeros(num_zeros_vals))
         exit_values             =   np.append(exit_values, np.zeros(num_zeros_vals_exit))
-        poisson_fitting(40,gate,resolution,arrival_values,"arrival")
-        poisson_fitting(40,gate,resolution,exit_values, "exit")
-
+        try :
+            poisson_fitting(40,gate,resolution,arrival_values,"arrival")
+        except:
+             pass
+        try:
+            poisson_fitting(40,gate,resolution,exit_values, "exit")
+        except:
+            pass
 #arrival_exit_rates("north",exclude_days=[1,7],exclude_dates=[(datetime.datetime(2015,05,02),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,04)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,20,21,22,23])
-arrival_exit_rates(exclude_days=[1,2,3,4,5,7],exclude_dates=[(datetime.datetime(2000,05,10),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,11)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])
+#arrival_exit_rates(exclude_days=[],exclude_dates=[(datetime.datetime(2000,05,10),datetime.datetime(2016,05,03)),((datetime.datetime(2016,05,07)),(datetime.datetime(2016,06,01))), (datetime.datetime(2016,06,04), datetime.datetime(2017,07,04))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])
+arrival_exit_rates(exclude_days=[],exclude_dates=[(datetime.datetime(2015,05,02),datetime.datetime(2016,06,20)),((datetime.datetime(2016,07,04)),(datetime.datetime(2017,07,11)))],exclude_hours=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])
 
 # arrival_rate_byDate(223, 60, datetime.datetime(2016,05,9))
 #arrival_rate(223,10)
